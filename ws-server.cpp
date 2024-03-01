@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <mutex>
 #include <cmath>
+#include <memory>
 
 #include <fmt/core.h>
 
@@ -65,7 +66,7 @@ struct whisper_params {
 
 static whisper_params params;
 static std::mutex g_ws_clients_mutex;
-static std::unordered_map<void *, ws_client_slot *> g_ws_clients;
+static std::unordered_map<void *, std::unique_ptr<ws_client_slot>> g_ws_clients;
 
 static ws_client_slot *find_ws_client(websocketpp::connection_hdl hdl)
 {
@@ -73,7 +74,7 @@ static ws_client_slot *find_ws_client(websocketpp::connection_hdl hdl)
 
 	auto it = g_ws_clients.find(hdl.lock().get());
 	if (it != g_ws_clients.end())
-		return it->second;
+		return it->second.get();
 
 	return nullptr;
 }
@@ -82,28 +83,24 @@ static ws_client_slot *add_ws_client(websocketpp::connection_hdl hdl)
 {
 	std::lock_guard<std::mutex> lock(g_ws_clients_mutex);
 	void *key = hdl.lock().get();
-	ws_client_slot *cl;
 
 	auto it = g_ws_clients.find(key);
 	if (it != g_ws_clients.end())
-		return it->second;
+		return it->second.get();
 
-	cl = new ws_client_slot;
-	g_ws_clients[key] = cl;
-	return cl;
+	auto cl = std::make_unique<ws_client_slot>() ;
+	g_ws_clients[key] = std::move(cl);
+	return g_ws_clients[key].get();
 }
 
 static void del_ws_client(websocketpp::connection_hdl hdl)
 {
 	std::lock_guard<std::mutex> lock(g_ws_clients_mutex);
 	void *key = hdl.lock().get();
-	ws_client_slot *cl;
 
 	auto it = g_ws_clients.find(key);
 	if (it != g_ws_clients.end()) {
-		cl = it->second;
 		g_ws_clients.erase(it);
-		delete cl;
 	}
 }
 
