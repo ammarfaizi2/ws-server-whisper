@@ -14,6 +14,11 @@
 #include <cmath>
 
 #include "wav_writer.h"
+#include "whisper_channel.hpp"
+#include "stream.hpp"
+
+#define WHISPER_SAMPLE_RATE 88200
+#define DEBUG_WRITE_TO_WAV 0
 
 typedef websocketpp::server<websocketpp::config::asio> server;
 typedef server::message_ptr msg_ptr;
@@ -28,40 +33,17 @@ struct ws_server {
 
 struct ws_client_slot {
 	std::string		fname;
+	std::thread		routine;
+	struct whisper_channel	wc;
+
+#if DEBUG_WRITE_TO_WAV
 	wav_writer		ww;
-	std::vector<float>	pcmf32;
+#endif
+
 };
 
-#define WHISPER_SAMPLE_RATE 44100
-
-struct whisper_params {
-	int32_t n_threads  = std::min(4, (int32_t) std::thread::hardware_concurrency());
-	int32_t step_ms    = 3000;
-	int32_t length_ms  = 10000;
-	int32_t keep_ms    = 200;
-	int32_t capture_id = -1;
-	int32_t max_tokens = 32;
-	int32_t audio_ctx  = 0;
-
-	float vad_thold    = 0.6f;
-	float freq_thold   = 100.0f;
-
-	bool speed_up      = false;
-	bool translate     = false;
-	bool no_fallback   = false;
-	bool print_special = false;
-	bool no_context    = true;
-	bool no_timestamps = false;
-	bool tinydiarize   = false;
-	bool save_audio    = false; // save audio to wav file
-	bool use_gpu       = true;
-
-	std::string language  = "en";
-	std::string model     = "models/ggml-base.en.bin";
-	std::string fname_out;
-};
-
-static whisper_params params;
+static int g_argc;
+static char **g_argv;
 static std::mutex g_ws_clients_mutex;
 static std::unordered_map<void *, ws_client_slot *> g_ws_clients;
 
@@ -107,11 +89,6 @@ static void del_ws_client(websocketpp::connection_hdl hdl)
 
 static void on_accept(struct ws_server *s, websocketpp::connection_hdl hdl)
 {
-	const int n_samples_step = (1e-3*params.step_ms  )*WHISPER_SAMPLE_RATE;
-	const int n_samples_len  = (1e-3*params.length_ms)*WHISPER_SAMPLE_RATE;
-	const int n_samples_keep = (1e-3*params.keep_ms  )*WHISPER_SAMPLE_RATE;
-	const int n_samples_30s  = (1e-3*30000.0         )*WHISPER_SAMPLE_RATE;
-
 	ws_client_slot *cl = add_ws_client(hdl);
 
 	std::string ep = s->ctx.get_con_from_hdl(hdl)->get_remote_endpoint();
@@ -123,17 +100,22 @@ static void on_accept(struct ws_server *s, websocketpp::connection_hdl hdl)
 			fname[i] = '_';
 	}
 
+#if DEBUG_WRITE_TO_WAV
 	std::cout << "Creating file " << fname << std::endl;
 	cl->ww.open(fname, WHISPER_SAMPLE_RATE, 16, 1);
 	cl->fname = fname;
-	cl->pcmf32 = std::vector<float>(n_samples_30s, 0.0f);
-	cl->ww.write(cl->pcmf32.data(), cl->pcmf32.size());
+#endif
+
+	cl->routine = std::thread([=] {
+		whisper_entry(g_argc, g_argv, &cl->wc);
+	});
 }
 
 static void on_message(struct ws_server *s, websocketpp::connection_hdl hdl, msg_ptr msg)
 {
 	std::string ep = s->ctx.get_con_from_hdl(hdl)->get_remote_endpoint();
 	ws_client_slot *cl = find_ws_client(hdl);
+	std::vector<float> pcmf32;
 
 	if (!cl)
 		return;
@@ -141,16 +123,31 @@ static void on_message(struct ws_server *s, websocketpp::connection_hdl hdl, msg
 	const auto &payload = msg->get_payload();
 	size_t len = payload.size();
 
-	cl->pcmf32.clear();
-	cl->pcmf32.resize(len/sizeof(float));
-	memcpy(cl->pcmf32.data(), payload.data(), len);
-	cl->ww.write(cl->pcmf32.data(), cl->pcmf32.size());
-	std::cout << "Received " << len << " bytes from " << ep << std::endl;
+	// Assuming payload is a binary string of s16 PCM data
+	const int16_t* pcm16 = reinterpret_cast<const int16_t*>(payload.data());
 
-	// for (size_t i = 0; i < len/sizeof(float); i++)
-	// 	std::cout << cl->pcmf32[i] << " ";
+	// Number of 16-bit samples
+	size_t num_samples = len / sizeof(int16_t);
 
-	// std::cout << std::endl;
+	// Reserve space for float samples
+	pcmf32.reserve(num_samples);
+
+	for(size_t i = 0; i < num_samples; ++i) {
+		 // Divide by the max value of int16_t to normalize to -1.0 to 1.0
+		float sample = pcm16[i] / 32768.0f;
+		pcmf32.push_back(sample);
+	}
+
+	printf("Received %zu bytes from %s\n", len, ep.c_str());
+
+	// Send to whisper via the channel.
+	cl->wc.produce(pcmf32);
+
+#if DEBUG_WRITE_TO_WAV
+	// The rest of your processing
+	cl->ww.write(pcmf32.data(), pcmf32.size());
+#endif
+
 }
 
 static void on_close(struct ws_server *s, websocketpp::connection_hdl hdl)
@@ -180,9 +177,11 @@ static void run_ws_server(const char *addr, uint16_t port)
 	ws.ctx.run();
 }
 
-int main(void)
+int main(int argc, char *argv[])
 {
 	try {
+		g_argc = argc;
+		g_argv = argv;
 		run_ws_server("0.0.0.0", 9002);
 		return 0;
 	} catch (const std::exception & e) {

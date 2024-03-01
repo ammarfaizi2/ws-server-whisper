@@ -13,6 +13,7 @@
 #include <vector>
 #include <fstream>
 
+#include "whisper_channel.hpp"
 
 // command-line parameters
 struct whisper_params {
@@ -112,7 +113,8 @@ void whisper_print_usage(int /*argc*/, char ** argv, const whisper_params & para
     fprintf(stderr, "\n");
 }
 
-int main(int argc, char ** argv) {
+int whisper_entry(int argc, char ** argv, struct whisper_channel *wc)
+{
     whisper_params params;
 
     if (whisper_params_parse(argc, argv, params) == false) {
@@ -239,7 +241,12 @@ int main(int argc, char ** argv) {
 
         if (!use_vad) {
             while (true) {
-                audio.get(params.step_ms, pcmf32_new);
+
+                // // Original code taking audio from the microphone:
+                // audio.get(params.step_ms, pcmf32_new);
+
+                // New code: taking audio from websocket via channel:
+                wc->consume(pcmf32_new);
 
                 if ((int) pcmf32_new.size() > 2*n_samples_step) {
                     fprintf(stderr, "\n\n%s: WARNING: cannot process audio fast enough, dropping audio ...\n\n", __func__);
