@@ -123,11 +123,9 @@ static void on_accept(struct ws_server *s, websocketpp::connection_hdl hdl)
 			fname[i] = '_';
 	}
 
-	std::cout << "Creating file " << fname << std::endl;
+	printf("Creating file %s\n", fname.c_str());
 	cl->ww.open(fname, WHISPER_SAMPLE_RATE, 16, 1);
 	cl->fname = fname;
-	cl->pcmf32 = std::vector<float>(n_samples_30s, 0.0f);
-	cl->ww.write(cl->pcmf32.data(), cl->pcmf32.size());
 }
 
 static void on_message(struct ws_server *s, websocketpp::connection_hdl hdl, msg_ptr msg)
@@ -145,12 +143,7 @@ static void on_message(struct ws_server *s, websocketpp::connection_hdl hdl, msg
 	cl->pcmf32.resize(len/sizeof(float));
 	memcpy(cl->pcmf32.data(), payload.data(), len);
 	cl->ww.write(cl->pcmf32.data(), cl->pcmf32.size());
-	std::cout << "Received " << len << " bytes from " << ep << std::endl;
-
-	// for (size_t i = 0; i < len/sizeof(float); i++)
-	// 	std::cout << cl->pcmf32[i] << " ";
-
-	// std::cout << std::endl;
+	printf("Received %lu bytes from %s (saved to: %s)\n", len, ep.c_str(), cl->fname.c_str());
 }
 
 static void on_close(struct ws_server *s, websocketpp::connection_hdl hdl)

@@ -1,0 +1,6 @@
+
+#ifndef STREAM_WORKER_HPP
+#define STREAM_WORKER_HPP
+
+
+#endif /* STREAM_WORKER_HPP */
