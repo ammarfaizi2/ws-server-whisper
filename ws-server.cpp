@@ -13,6 +13,8 @@
 #include <mutex>
 #include <cmath>
 
+#include <fmt/core.h>
+
 #include "wav_writer.h"
 
 typedef websocketpp::server<websocketpp::config::asio> server;
@@ -123,7 +125,7 @@ static void on_accept(struct ws_server *s, websocketpp::connection_hdl hdl)
 			fname[i] = '_';
 	}
 
-	std::cout << "Creating file " << fname << std::endl;
+	fmt::print("Creating file {}\r\n",fname);
 	cl->ww.open(fname, WHISPER_SAMPLE_RATE, 16, 1);
 	cl->fname = fname;
 	cl->pcmf32 = std::vector<float>(n_samples_30s, 0.0f);
@@ -145,7 +147,9 @@ static void on_message(struct ws_server *s, websocketpp::connection_hdl hdl, msg
 	cl->pcmf32.resize(len/sizeof(float));
 	memcpy(cl->pcmf32.data(), payload.data(), len);
 	cl->ww.write(cl->pcmf32.data(), cl->pcmf32.size());
-	std::cout << "Received " << len << " bytes from " << ep << std::endl;
+
+	fmt::print("Received {} bytes from {}\r\n", len, ep);
+	// fmt::print("data: {:02x}\r\n", fmt::join(payload, ""));
 
 	// for (size_t i = 0; i < len/sizeof(float); i++)
 	// 	std::cout << cl->pcmf32[i] << " ";
@@ -155,7 +159,7 @@ static void on_message(struct ws_server *s, websocketpp::connection_hdl hdl, msg
 
 static void on_close(struct ws_server *s, websocketpp::connection_hdl hdl)
 {
-	std::cout << "Client " << hdl.lock().get() << " disconnected" << std::endl;
+	fmt::print("Client {} disconnected\r\n", hdl.lock().get());
 	del_ws_client(hdl);
 }
 
@@ -186,7 +190,7 @@ int main(void)
 		run_ws_server("0.0.0.0", 9002);
 		return 0;
 	} catch (const std::exception & e) {
-		std::cout << "Error: " << e.what() << std::endl;
+		fmt::print("Error: {}\r\n",e.what());
 		return 1;
 	}
 }
