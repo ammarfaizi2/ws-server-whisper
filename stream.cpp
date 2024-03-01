@@ -2,6 +2,8 @@
 //
 // A very quick-n-dirty implementation serving mainly as a proof of concept.
 //
+#include "stream.hpp"
+#include "whisper_channel.hpp"
 #include "common-sdl.h"
 #include "common.h"
 #include "whisper.h"
@@ -13,7 +15,20 @@
 #include <vector>
 #include <fstream>
 
-#include "whisper_channel.hpp"
+
+//  500 -> 00:05.000
+// 6000 -> 01:00.000
+std::string to_timestamp(int64_t t) {
+    int64_t sec = t/100;
+    int64_t msec = t - sec*100;
+    int64_t min = sec/60;
+    sec = sec - min*60;
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%02d:%02d.%03d", (int) min, (int) sec, (int) msec);
+
+    return std::string(buf);
+}
 
 // command-line parameters
 struct whisper_params {
@@ -113,8 +128,7 @@ void whisper_print_usage(int /*argc*/, char ** argv, const whisper_params & para
     fprintf(stderr, "\n");
 }
 
-int whisper_entry(int argc, char ** argv, struct whisper_channel *wc)
-{
+int whisper_entry(int argc, char ** argv, struct whisper_channel *wc) {
     whisper_params params;
 
     if (whisper_params_parse(argc, argv, params) == false) {
@@ -124,10 +138,10 @@ int whisper_entry(int argc, char ** argv, struct whisper_channel *wc)
     params.keep_ms   = std::min(params.keep_ms,   params.step_ms);
     params.length_ms = std::max(params.length_ms, params.step_ms);
 
-    const int n_samples_step = (1e-3*params.step_ms  )*WHISPER_SAMPLE_RATE;
-    const int n_samples_len  = (1e-3*params.length_ms)*WHISPER_SAMPLE_RATE;
-    const int n_samples_keep = (1e-3*params.keep_ms  )*WHISPER_SAMPLE_RATE;
-    const int n_samples_30s  = (1e-3*30000.0         )*WHISPER_SAMPLE_RATE;
+    const int n_samples_step = (1e-3*params.step_ms  )*CUSTOM_WHISPER_SAMPLE_RATE;
+    const int n_samples_len  = (1e-3*params.length_ms)*CUSTOM_WHISPER_SAMPLE_RATE;
+    const int n_samples_keep = (1e-3*params.keep_ms  )*CUSTOM_WHISPER_SAMPLE_RATE;
+    const int n_samples_30s  = (1e-3*30000.0         )*CUSTOM_WHISPER_SAMPLE_RATE;
 
     const bool use_vad = n_samples_step <= 0; // sliding window mode uses VAD
 
@@ -140,7 +154,7 @@ int whisper_entry(int argc, char ** argv, struct whisper_channel *wc)
     // init audio
 
     audio_async audio(params.length_ms);
-    if (!audio.init(params.capture_id, WHISPER_SAMPLE_RATE)) {
+    if (!audio.init(params.capture_id, CUSTOM_WHISPER_SAMPLE_RATE)) {
         fprintf(stderr, "%s: audio.init() failed!\n", __func__);
         return 1;
     }
@@ -154,7 +168,7 @@ int whisper_entry(int argc, char ** argv, struct whisper_channel *wc)
         exit(0);
     }
 
-    struct whisper_context_params cparams = whisper_context_default_params();
+    struct whisper_context_params cparams;
     cparams.use_gpu = params.use_gpu;
 
     struct whisper_context * ctx = whisper_init_from_file_with_params(params.model.c_str(), cparams);
@@ -178,9 +192,9 @@ int whisper_entry(int argc, char ** argv, struct whisper_channel *wc)
         fprintf(stderr, "%s: processing %d samples (step = %.1f sec / len = %.1f sec / keep = %.1f sec), %d threads, lang = %s, task = %s, timestamps = %d ...\n",
                 __func__,
                 n_samples_step,
-                float(n_samples_step)/WHISPER_SAMPLE_RATE,
-                float(n_samples_len )/WHISPER_SAMPLE_RATE,
-                float(n_samples_keep)/WHISPER_SAMPLE_RATE,
+                float(n_samples_step)/CUSTOM_WHISPER_SAMPLE_RATE,
+                float(n_samples_len )/CUSTOM_WHISPER_SAMPLE_RATE,
+                float(n_samples_keep)/CUSTOM_WHISPER_SAMPLE_RATE,
                 params.n_threads,
                 params.language.c_str(),
                 params.translate ? "translate" : "transcribe",
@@ -217,7 +231,7 @@ int whisper_entry(int argc, char ** argv, struct whisper_channel *wc)
         strftime(buffer, sizeof(buffer), "%Y%m%d%H%M%S", localtime(&now));
         std::string filename = std::string(buffer) + ".wav";
 
-        wavWriter.open(filename, WHISPER_SAMPLE_RATE, 16, 1);
+        wavWriter.open(filename, CUSTOM_WHISPER_SAMPLE_RATE, 16, 1);
     }
     printf("[Start speaking]\n");
     fflush(stdout);
@@ -242,20 +256,24 @@ int whisper_entry(int argc, char ** argv, struct whisper_channel *wc)
         if (!use_vad) {
             while (true) {
 
-                // // Original code taking audio from the microphone:
+                // // Original code: Taking audio from the microphone.
                 // audio.get(params.step_ms, pcmf32_new);
 
-                // New code: taking audio from websocket via channel:
-                wc->consume(pcmf32_new);
-
-                if ((int) pcmf32_new.size() > 2*n_samples_step) {
-                    fprintf(stderr, "\n\n%s: WARNING: cannot process audio fast enough, dropping audio ...\n\n", __func__);
-                    audio.clear();
-                    continue;
+                // Modified code: Taking audio from the whisper_channel.
+                if (!wc->consume(pcmf32_new)) {
+                    break;
                 }
 
+                // printf("Consumed audio\n");
+
+                // if ((int) pcmf32_new.size() > 2*n_samples_step) {
+                //     fprintf(stderr, "\n\n%s: WARNING: cannot process audio fast enough, dropping audio ...\n\n", __func__);
+                //     audio.clear();
+                //     continue;
+                // }
+
                 if ((int) pcmf32_new.size() >= n_samples_step) {
-                    audio.clear();
+                    // audio.clear();
                     break;
                 }
 
@@ -290,7 +308,7 @@ int whisper_entry(int argc, char ** argv, struct whisper_channel *wc)
 
             audio.get(2000, pcmf32_new);
 
-            if (::vad_simple(pcmf32_new, WHISPER_SAMPLE_RATE, 1000, params.vad_thold, params.freq_thold, false)) {
+            if (::vad_simple(pcmf32_new, CUSTOM_WHISPER_SAMPLE_RATE, 1000, params.vad_thold, params.freq_thold, false)) {
                 audio.get(params.length_ms, pcmf32);
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -343,7 +361,7 @@ int whisper_entry(int argc, char ** argv, struct whisper_channel *wc)
                     printf("\33[2K\r");
                 } else {
                     const int64_t t1 = (t_last - t_start).count()/1000000;
-                    const int64_t t0 = std::max(0.0, t1 - pcmf32.size()*1000.0/WHISPER_SAMPLE_RATE);
+                    const int64_t t0 = std::max(0.0, t1 - pcmf32.size()*1000.0/CUSTOM_WHISPER_SAMPLE_RATE);
 
                     printf("\n");
                     printf("### Transcription %d START | t0 = %d ms | t1 = %d ms\n", n_iter, (int) t0, (int) t1);
@@ -365,7 +383,7 @@ int whisper_entry(int argc, char ** argv, struct whisper_channel *wc)
                         const int64_t t0 = whisper_full_get_segment_t0(ctx, i);
                         const int64_t t1 = whisper_full_get_segment_t1(ctx, i);
 
-                        std::string output = "[" + to_timestamp(t0, false) + " --> " + to_timestamp(t1, false) + "]  " + text;
+                        std::string output = "[" + to_timestamp(t0) + " --> " + to_timestamp(t1) + "]  " + text;
 
                         if (whisper_full_get_segment_speaker_turn_next(ctx, i)) {
                             output += " [SPEAKER_TURN]";

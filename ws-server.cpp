@@ -17,8 +17,7 @@
 #include "whisper_channel.hpp"
 #include "stream.hpp"
 
-#define WHISPER_SAMPLE_RATE 88200
-#define DEBUG_WRITE_TO_WAV 0
+#define DEBUG_WRITE_TO_WAV 1
 
 typedef websocketpp::server<websocketpp::config::asio> server;
 typedef server::message_ptr msg_ptr;
@@ -91,6 +90,7 @@ static void on_accept(struct ws_server *s, websocketpp::connection_hdl hdl)
 {
 	ws_client_slot *cl = add_ws_client(hdl);
 
+#if DEBUG_WRITE_TO_WAV
 	std::string ep = s->ctx.get_con_from_hdl(hdl)->get_remote_endpoint();
 	std::string fname = ep + ".wav";
 
@@ -100,9 +100,8 @@ static void on_accept(struct ws_server *s, websocketpp::connection_hdl hdl)
 			fname[i] = '_';
 	}
 
-#if DEBUG_WRITE_TO_WAV
 	std::cout << "Creating file " << fname << std::endl;
-	cl->ww.open(fname, WHISPER_SAMPLE_RATE, 16, 1);
+	cl->ww.open(fname, CUSTOM_WHISPER_SAMPLE_RATE, 16, 1);
 	cl->fname = fname;
 #endif
 
@@ -138,7 +137,9 @@ static void on_message(struct ws_server *s, websocketpp::connection_hdl hdl, msg
 		pcmf32.push_back(sample);
 	}
 
+#if 0
 	printf("Received %zu bytes from %s\n", len, ep.c_str());
+#endif
 
 	// Send to whisper via the channel.
 	cl->wc.produce(pcmf32);
@@ -152,7 +153,10 @@ static void on_message(struct ws_server *s, websocketpp::connection_hdl hdl, msg
 
 static void on_close(struct ws_server *s, websocketpp::connection_hdl hdl)
 {
-	std::cout << "Client " << hdl.lock().get() << " disconnected" << std::endl;
+	ws_client_slot *cl = find_ws_client(hdl);
+
+	cl->wc.stop();
+	cl->routine.join();
 	del_ws_client(hdl);
 }
 
@@ -174,6 +178,7 @@ static void run_ws_server(const char *addr, uint16_t port)
 	ws.ctx.set_close_handler(bind(&on_close, &ws, ::_1));
 	ws.ctx.listen(ep);
 	ws.ctx.start_accept();
+	printf("Websocket server is running on %s:%hu...\n", addr, port);
 	ws.ctx.run();
 }
 
